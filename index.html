@@ -626,6 +626,7 @@
   'use strict';
 
   var STORAGE_KEY = 'timer-presets-v1';
+  var SESSION_KEY = 'timer-session-v1';
   var DEFAULT_PRESETS = [
     { minutes: 3, seconds: 0 },
     { minutes: 5, seconds: 0 },
@@ -702,6 +703,97 @@
       localStorage.setItem(STORAGE_KEY, JSON.stringify(presets));
     } catch (e) { /* ignore quota / private mode */ }
   }
+
+  function saveSession(mode) {
+    try {
+      var data = {
+        mode: mode,
+        paused: paused,
+        remainingMs: remainingMs,
+        targetEnd: targetEnd,
+        savedAt: Date.now()
+      };
+      localStorage.setItem(SESSION_KEY, JSON.stringify(data));
+    } catch (e) { /* ignore */ }
+  }
+
+  function clearSession() {
+    try {
+      localStorage.removeItem(SESSION_KEY);
+    } catch (e) { /* ignore */ }
+  }
+
+  function restoreSession() {
+    try {
+      var raw = localStorage.getItem(SESSION_KEY);
+      if (!raw) return false;
+      var data = JSON.parse(raw);
+      if (!data || !data.mode) {
+        clearSession();
+        return false;
+      }
+
+      if (data.mode === 'alarm') {
+        paused = false;
+        remainingMs = 0;
+        targetEnd = null;
+        timeDisplay.textContent = '00:00';
+        showView('alarm');
+        return true;
+      }
+
+      if (data.mode === 'paused') {
+        paused = true;
+        remainingMs = Math.max(0, Number(data.remainingMs) || 0);
+        targetEnd = null;
+        if (remainingMs <= 0) {
+          clearSession();
+          return false;
+        }
+        btnPause.classList.add('hidden');
+        btnResume.classList.remove('hidden');
+        updateDisplay();
+        showView('running');
+        return true;
+      }
+
+      if (data.mode === 'running') {
+        var end = Number(data.targetEnd) || 0;
+        if (!end) {
+          clearSession();
+          return false;
+        }
+        var left = end - Date.now();
+        if (left <= 0) {
+          paused = false;
+          remainingMs = 0;
+          targetEnd = null;
+          timeDisplay.textContent = '00:00';
+          showView('alarm');
+          saveSession('alarm');
+          return true;
+        }
+        paused = false;
+        remainingMs = left;
+        targetEnd = end;
+        btnPause.classList.remove('hidden');
+        btnResume.classList.add('hidden');
+        updateDisplay();
+        showView('running');
+        startTick();
+        requestWakeLock();
+        saveSession('running');
+        return true;
+      }
+
+      clearSession();
+      return false;
+    } catch (e) {
+      clearSession();
+      return false;
+    }
+  }
+
 
   function pad2(n) {
     return (n < 10 ? '0' : '') + n;
@@ -1023,6 +1115,7 @@
     showView('running');
     startTick();
     requestWakeLock();
+    saveSession('running');
   }
 
   function pauseTimer() {
@@ -1034,6 +1127,7 @@
     updateDisplay();
     btnPause.classList.add('hidden');
     btnResume.classList.remove('hidden');
+    saveSession('paused');
   }
 
   function resumeTimer() {
@@ -1045,6 +1139,7 @@
     updateDisplay();
     startTick();
     requestWakeLock();
+    saveSession('running');
   }
 
   function endTimer() {
@@ -1054,6 +1149,7 @@
     remainingMs = 0;
     paused = false;
     releaseWakeLock();
+    clearSession();
     showView('top');
   }
 
@@ -1064,12 +1160,14 @@
     paused = false;
     releaseWakeLock();
     showView('alarm');
+    saveSession('alarm');
     startAlarmSound();
   }
 
   function stopAlarm() {
     stopAlarmSound();
     releaseWakeLock();
+    clearSession();
     showView('top');
   }
 
@@ -1084,7 +1182,22 @@
   }
 
   document.addEventListener('visibilitychange', function () {
-    if (document.visibilityState === 'visible') resync();
+    if (document.visibilityState === 'visible') {
+      resync();
+    } else if (views.alarm.classList.contains('active')) {
+      saveSession('alarm');
+    } else if (views.running.classList.contains('active')) {
+      if (paused) saveSession('paused');
+      else if (targetEnd != null) saveSession('running');
+    }
+  });
+  window.addEventListener('pagehide', function () {
+    if (views.alarm.classList.contains('active')) {
+      saveSession('alarm');
+    } else if (views.running.classList.contains('active')) {
+      if (paused) saveSession('paused');
+      else if (targetEnd != null) saveSession('running');
+    }
   });
   window.addEventListener('focus', resync);
   window.addEventListener('pageshow', resync);
@@ -1158,6 +1271,7 @@
   }
 
   renderPresets();
+  restoreSession();
 })();
 </script>
 </body>
